@@ -1,0 +1,8 @@
+{
+  "name": "Civic Election Assistant",
+  "description": "An AI-powered assistant designed to provide secure, accurate, and accessible guidance to users about the election process. It offers step-by-step guidance for voter registration, eligibility checking, polling booth discovery, and election timelines.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": []
+}
