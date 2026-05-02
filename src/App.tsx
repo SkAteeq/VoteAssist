@@ -1,10 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { GoogleGenAI } from '@google/genai';
-import { Send, MapPin, IndianRupee, Bell, Info } from 'lucide-react';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+import { Send, Info } from 'lucide-react';
+import { MessageBubble } from './presentation/components/MessageBubble';
+import { processUserQuery, OrchestratorResponse } from './core/ai/orchestrator';
+import { UserContext } from './core/rules/eligibility';
 
 const INITIAL_MESSAGE = `To guide you better, please tell me:
 
@@ -51,19 +49,18 @@ PROGRESSIVE GUIDANCE: After every response, ask:
 2. Check something else
 3. Get links for your state?"`;
 
-type Message = {
+type Message = OrchestratorResponse & {
   role: 'user' | 'assistant';
-  content: string;
 };
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([
-    { role: 'assistant', content: INITIAL_MESSAGE },
+    { role: 'assistant', content: INITIAL_MESSAGE, type: 'text' },
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [userData, setUserData] = useState<{ state?: string, intent?: string }>({});
+  const [userContext, setUserContext] = useState<UserContext>({});
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -73,49 +70,61 @@ export default function App() {
     scrollToBottom();
   }, [messages]);
 
+  // Context extraction heuristics
+  const extractContext = (text: string, currentCtx: UserContext): UserContext => {
+    const newCtx = { ...currentCtx };
+    const lower = text.toLowerCase();
+    
+    const ageMatch = lower.match(/(?:i am |am )?(\d+)\s*(?:years|yrs)?\s*(?:old)?/i);
+    if (ageMatch && parseInt(ageMatch[1]) < 120) newCtx.age = parseInt(ageMatch[1]);
+    
+    if (lower.includes('indian')) newCtx.isCitizen = true;
+    if (lower.includes('aadhaar') || lower.includes('pan') || lower.includes('voter id') || lower.includes('yes i have')) newCtx.hasValidId = true;
+
+    const pinMatch = text.match(/\\b\\d{6}\\b/);
+    if (pinMatch) newCtx.pinCode = pinMatch[0];
+
+    return newCtx;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
 
     const userMessage = input.trim();
     setInput('');
-    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+    setMessages(prev => [...prev, { role: 'user', content: userMessage, type: 'text' }]);
     setIsLoading(true);
 
     try {
-      // Basic rule-based overrides or data extraction could go here before AI call
-      
-      const chatHistory = messages.map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }]
-      }));
-      
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: [
-          ...chatHistory,
-          { role: 'user', parts: [{ text: userMessage }] }
-        ],
-        config: {
-          systemInstruction: SYSTEM_INSTRUCTION,
-          temperature: 0.1, // Keep it factual and deterministic
-        }
-      });
+      const updatedContext = extractContext(userMessage, userContext);
+      setUserContext(updatedContext);
 
-      const assistantMessage = response.text || "I apologize, but I couldn't process that request. Please try again.";
-      setMessages(prev => [...prev, { role: 'assistant', content: assistantMessage }]);
+      const chatHistory = messages
+        .filter(m => m.type !== 'error' && m.type !== 'map')
+        .map(m => ({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: m.content }]
+        }));
 
+      const response = await processUserQuery(userMessage, updatedContext, chatHistory, SYSTEM_INSTRUCTION);
+      
+      setMessages(prev => [...prev, { 
+        role: 'assistant', 
+        content: response.content, 
+        type: response.type, 
+        meta: response.meta 
+      }]);
     } catch (error) {
       console.error("Error calling Gemini:", error);
-      setMessages(prev => [...prev, { role: 'assistant', content: "I encountered an error connecting to my knowledge base. Please try again later." }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: "I encountered an error connecting to my knowledge base. Please try again later.", type: 'error' }]);
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center p-4 sm:p-8">
-      {/* Header */}
+    <div className="min-h-screen flex flex-col items-center p-4 sm:p-8 bg-slate-50">
       <header className="w-full max-w-3xl flex items-center gap-3 mb-8">
         <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center text-white shrink-0 shadow-md">
           <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -123,34 +132,21 @@ export default function App() {
           </svg>
         </div>
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Civic Election Assistant</h1>
-          <p className="text-sm text-slate-500 font-medium tracking-wide text-transform uppercase">Secure & Neutral Guidance</p>
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">VoteAssist AI</h1>
+          <p className="text-sm text-slate-500 font-medium tracking-wide text-transform uppercase">Secure Civic Guidance</p>
         </div>
       </header>
 
-      {/* Main Chat Container */}
       <main className="w-full max-w-3xl bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex flex-col" style={{ height: 'calc(100vh - 140px)' }}>
-        
-        {/* Chat Messages */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
           {messages.map((msg, idx) => (
-            <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div 
-                className={`max-w-[85%] rounded-2xl px-5 py-4 ${
-                  msg.role === 'user' 
-                    ? 'bg-blue-600 text-white rounded-br-none' 
-                    : 'bg-slate-100 text-slate-800 rounded-bl-none'
-                }`}
-              >
-                {msg.role === 'user' ? (
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
-                ) : (
-                  <div className="markdown-body text-sm sm:text-base leading-relaxed">
-                    <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
-                  </div>
-                )}
-              </div>
-            </div>
+            <MessageBubble 
+              key={idx} 
+              message={msg.content} 
+              isUser={msg.role === 'user'} 
+              type={msg.type}
+              meta={msg.meta}
+            />
           ))}
           {isLoading && (
             <div className="flex justify-start">
@@ -164,7 +160,6 @@ export default function App() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input Area */}
         <div className="p-4 bg-white border-t border-slate-100">
           <form onSubmit={handleSubmit} className="relative flex items-center">
             <input
@@ -172,13 +167,13 @@ export default function App() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="Type your message here..."
-              className="w-full bg-slate-50 border border-slate-200 rounded-full pl-6 pr-14 py-4 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-inner font-medium"
+              className="w-full bg-slate-50 border border-slate-200 rounded-full pl-6 pr-14 py-4 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-inner font-medium"
               disabled={isLoading}
             />
             <button
               type="submit"
               disabled={!input.trim() || isLoading}
-              className="absolute right-2 p-3 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:opacity-50 disabled:hover:bg-blue-600 transition-colors shadow-sm"
+              className="absolute right-2 p-3 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-sm"
               aria-label="Send message"
             >
               <Send size={18} className={isLoading ? 'opacity-50' : ''} />
